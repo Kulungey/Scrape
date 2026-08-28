@@ -239,7 +239,7 @@ Cloudflare handling also depends on the site configuration and the browser being
 
 When a site changes its player or delivery system, the corresponding extraction layer may need to be updated.
 
-## Legal and responsible use
+## Legal and responsible use*
 
 Only download content that you have permission to download and use.
 
