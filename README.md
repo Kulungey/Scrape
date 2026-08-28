@@ -1,123 +1,108 @@
-# scraper.py — video downloader with Cloudflare bypass
+# scrape
 
-A single-file CLI tool that pulls video files down from a page URL, falling
-through a chain of strategies until one works — direct fetch, real-browser
-Cloudflare bypass, HTML/iframe scraping, or a yt-dlp fallback. YouTube links
-skip straight to yt-dlp.
+Video downloader with Cloudflare bypass. Paste a link, pick a format, done.
 
-## How it works
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-Requests are tried in order, stopping at the first success:
+---
 
-1. **Direct fetch** — `curl_cffi` (or `requests` if that's unavailable) with a
-   Chrome TLS fingerprint, no browser needed.
-2. **Real Chrome via DrissionPage** — launches an actual Chrome instance to
-   clear Cloudflare's JS challenge and sniff the media URL off the network
-   tab.
-3. **HTML / iframe scan** — regex + base64 decoding over the raw page (and
-   any player iframe it finds) to dig out a direct media URL.
-4. **yt-dlp fallback** — handed off whenever nothing above finds a URL, the
-   URL is YouTube, or the CDN URL turns out to be token-bound (short-lived
-   signed URL) or in a domain-mismatch situation.
+## Features
 
-Direct downloads stream with retries; `.m3u8` sources are pulled through
-`ffmpeg`. Progress renders as a live-redrawing rainbow bar in the terminal,
-including through yt-dlp's silent merge/remux step and through Chrome's fully
-blocking page-load/Cloudflare-bypass calls — both used to just go quiet and
-look frozen; now a marquee bar keeps animating through them.
+- **YouTube & Twitter/X** — routed straight to yt-dlp, no scraping needed
+- **Cloudflare-protected sites** — real Chrome via DrissionPage handles the JS challenge
+- **Token-bound CDN URLs** — browser network interception captures the live stream URL
+- **Auto-update** — checks yt-dlp on startup, updates silently if stale
+- **Rainbow progress bar** — because why not
+- **ffmpeg post-processing** — download in whatever format yt-dlp gives, convert to what you asked for
+
+---
 
 ## Requirements
 
-- **Python 3.10+** (the code uses `X | None` union-type hints, which need
-  3.10 or newer)
-- **ffmpeg** on `PATH` — required for `.m3u8` downloads and yt-dlp's
-  audio/video mux step
-  - Windows: `winget install ffmpeg`
-  - macOS: `brew install ffmpeg`
-  - Linux: `apt install ffmpeg`
-- **Google Chrome** installed — used by DrissionPage for the browser-bypass
-  layer
-
 ### Python packages
 
-```bash
+```
 pip install -r requirements.txt
 ```
 
-| Package     | Why it's needed |
-|-------------|------------------|
-| `curl_cffi` | Preferred HTTP backend — impersonates a real Chrome TLS fingerprint so Layer 1 isn't trivially blocked. Falls back to `requests` if not installed. |
-| `DrissionPage` | Drives real Chrome for the Cloudflare-bypass / network-intercept layer (Layer 2). |
-| `yt-dlp`    | Handles YouTube and the generic fallback layer (Layer 4); also used internally for `.m3u8`/DASH merges. |
-| `requests`  | Fallback HTTP backend if `curl_cffi` fails to install (e.g. no prebuilt wheel for your platform). |
+| Package | Purpose |
+|---|---|
+| `yt-dlp` | YouTube, Twitter/X, and generic video extraction |
+| `curl_cffi` | Chrome TLS fingerprint for Cloudflare bypass |
+| `DrissionPage` | Real Chrome automation for JS-heavy sites |
+
+### System dependencies
+
+| Tool | Install |
+|---|---|
+| **Python 3.10+** | [python.org](https://python.org) |
+| **ffmpeg** | `winget install ffmpeg` (Windows) · `brew install ffmpeg` (Mac) · `apt install ffmpeg` (Linux) |
+| **Chrome** | Must be installed — DrissionPage drives it |
+
+---
+
+## Install
+
+```bash
+git clone https://github.com/yourname/scrape
+cd scrape
+pip install -r requirements.txt
+```
+
+---
 
 ## Usage
 
-```bash
-python scraper.py <url>
-```
-
-Or run it with no arguments to get an interactive prompt (with an idle-logo
-animation) for the URL and output format:
+**Double-click** `scraper.py` or run from terminal:
 
 ```bash
 python scraper.py
 ```
 
-Downloaded files land in `./videos/`.
+Paste a URL when prompted, pick output format (mp4 / mp3 / mkv / webm / original), wait.
 
-## Terminal experience
+You can also pass the URL as an argument:
 
-The whole CLI is built around one rule: nothing animated should ever freeze
-mid-way and look dead.
+```bash
+python scraper.py https://www.youtube.com/watch?v=dQw4w9WgXcQ
+```
 
-- **Breathing menu box** — the output-format picker has a continuously
-  animating rainbow border, with the "thinking" mascot looping above it the
-  whole time you're choosing.
-- **Rainbow progress bars** — byte-accurate where possible, falling back to
-  a time-based or marquee bar when the source doesn't report a real size.
-- **Mascots** — a single happy/sad face animates through to the very end of
-  the run (through the final "press any key to close" wait), instead of
-  playing a couple of loops and freezing partway.
-- **Browser-intercept marquee** — Chrome's page-load and Cloudflare-bypass
-  steps are fully blocking with no progress hooks of their own; those now
-  run on a background thread while the main thread keeps a marquee bar
-  animating, so the CLI never goes silently unresponsive during a Cloudflare
-  clear.
+Output lands in a `videos/` folder next to the script.
 
-All animation is single-writer: any background thread only touches data
-(subprocess pipes, the browser driver) and never the terminal directly, to
-avoid the redraw races that come from two things trying to draw at once.
+---
 
-## Configuration
+## How it works
 
-A few constants near the top of `scraper.py` control behavior:
+Sites go through layers in order, stopping at the first success:
 
-| Constant         | Default | Purpose |
-|------------------|---------|----------|
-| `OUTPUT_DIR`     | `videos`| Where downloaded files are saved |
-| `MAX_RETRIES`    | `3`     | Retry attempts for a failed direct download |
-| `MIN_MB`         | `2`     | Minimum acceptable file size (guards against corrupt/partial downloads) |
-| `YTDLP_TIMEOUT`  | `3600`  | Max seconds to let a yt-dlp subprocess run |
-| `FFMPEG_TIMEOUT` | `3600`  | Max seconds to let an ffmpeg subprocess run |
-| `STREAM_TIMEOUT` | `30`    | Socket timeout for streamed direct downloads |
+```
+URL
+ │
+ ├─ YouTube / Twitter?  ──► yt-dlp (native extractor)
+ │
+ ├─ [1] curl_cffi direct fetch  (Chrome TLS fingerprint)
+ ├─ [2] Real Chrome + Cloudflare bypass  (DrissionPage)
+ ├─ [3] HTML / iframe scan + base64 decode
+ └─ [4] Browser network interception → CDN URL → ffmpeg/yt-dlp
+```
 
-## Known limitations / possible next steps
+---
 
-- **Windows-only cookie handling** — the intercept path notes that DPAPI
-  cookie decryption is unreliable on Windows, so it skips cookies rather than
-  looping; worth revisiting if you need authenticated sessions.
-- **Chrome-only bypass** — DrissionPage is hard-wired to Chrome; no
-  Firefox/WebKit fallback if Chrome isn't installed.
-- **No proxy support** — neither the direct-fetch nor browser layers accept
-  a proxy URL; add one if you're scraping from a blocked network.
-- **No concurrent downloads** — `scrape()` handles one URL per run; batching
-  a list of URLs would need a thin wrapper around it.
-- **Single output filename scheme** — `safe_filename()` numbers files
-  sequentially per run; a resumable/skip-if-exists mode isn't implemented.
+## YouTube & 403 errors
 
-## Code health
+YouTube enforces Proof of Origin (PO) tokens on stream downloads. If you hit a 403:
 
-Checked with `pyflakes` — no unused imports, no dead functions, no unused
-variables. Every top-level function is reachable from `scrape()` or the
-`if __name__ == "__main__"` entry point.
+1. The script tries plain yt-dlp first (works for most videos)
+2. Falls back to Edge → Chrome → Firefox cookies automatically
+3. Make sure you're **logged into YouTube** in at least one browser
+
+Keeping yt-dlp up to date (handled automatically on startup) is usually enough.
+
+---
+
+## Notes
+
+- Downloads are saved to `videos/` — created automatically if it doesn't exist
+- Existing files are skipped (no re-download)
+- ffmpeg is optional but strongly recommended — without it format conversion is limited
