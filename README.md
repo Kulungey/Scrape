@@ -4,8 +4,11 @@ A lightweight video downloader for sites that are difficult to extract from dire
 
 Paste a URL, choose a format, and let `scrape` handle the rest. It uses `yt-dlp` where possible, a real Chrome session for Cloudflare protected sites, and browser network interception when the video URL is only exposed after the page loads.
 
+
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Tests](https://img.shields.io/badge/tests-26%20passing-brightgreen)
+
 
 ## Features
 
