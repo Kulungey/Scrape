@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scrape"
+version = "0.1.0"
+description = "A layered media extraction and downloading tool for difficult video pages."
+requires-python = ">=3.10"
+dependencies = [
+    "DrissionPage",
+    "curl_cffi",
+    "yt-dlp",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+scrape = "scrape.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["scrape*"]

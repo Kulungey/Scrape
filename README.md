@@ -1,170 +1,86 @@
-# scraper
+# scrape
 
-Video downloader with Cloudflare bypass. Paste a URL, pick a format, get the file.
+A layered media extraction and downloading tool for difficult video pages.
 
-YouTube routes directly to yt-dlp. Everything else goes through a 4-layer extraction stack: direct HTTP fetch, real Chrome with CF bypass, HTML/iframe scanning, then yt-dlp as a last resort.
-
----
-
-## Requirements
-
-**Python 3.10 or newer**
-
-External tools (must be on PATH):
-
-| Tool | Purpose | Required |
-|------|---------|----------|
-| ffmpeg | HLS/DASH muxing, format conversion | Strongly recommended |
-| Chrome | CF bypass and token-bound CDN intercept | Required for protected sites |
-| yt-dlp | YouTube and generic fallback | Recommended |
-
-Python packages:
+Not just "video downloader with Cloudflare bypass" — it walks a pipeline of
+progressively heavier techniques, using the cheapest one that works and
+falling through to the next when it doesn't:
 
 ```
-pip install DrissionPage curl_cffi yt-dlp
+URL
+ ↓
+Platform detection      (YouTube / X.com → straight to yt-dlp)
+ ↓
+Direct HTTP              (curl_cffi with a Chrome TLS fingerprint)
+ ↓
+Browser / Cloudflare     (real Chrome via DrissionPage, CF challenge solving)
+ ↓
+HTML + iframe extraction (extractor chain: direct match, then player iframe)
+ ↓
+Network interception     (watch the browser's own traffic for the CDN URL)
+ ↓
+yt-dlp                   (generic extractor as a last resort)
+ ↓
+ffmpeg
+ ↓
+Download
 ```
-
-Install ffmpeg:
-- Windows: https://ffmpeg.org/download.html, add the bin folder to PATH
-- Or via winget: `winget install ffmpeg`
-
----
 
 ## Install
 
-```bash
-git clone https://github.com/yourusername/scraper.git
-cd scraper
-pip install DrissionPage curl_cffi yt-dlp
+```
+pip install -e .
 ```
 
-No virtual environment required, but use one if you prefer.
-
----
+Requires ffmpeg on PATH and Chrome installed for the browser layers.
 
 ## Usage
 
-```bash
-python scraper.py https://example.com/video
+```
+scrape URL
+scrape URL -f mp3
+scrape URL --output downloads
+scrape URL --debug
+scrape URL --no-browser --no-ytdlp
+scrape                       # no args: interactive prompt with animated banner
 ```
 
-Or run without arguments and paste the URL when prompted:
+Run `scrape --help` for the full flag list.
 
-```bash
-python scraper.py
-```
+Normal-mode logs redact CDN URLs down to just the host, since tokenized
+CDN links can carry authentication material in the query string. Pass
+`--debug` to see full URLs and structured `key=value` diagnostic lines.
 
-You will then be asked for an output format:
-
-```
-Output format:
-  1. mp4
-  2. mp3
-  3. mkv
-  4. webm
-  5. original  <- keeps original container/quality
-Choice [1]:
-```
-
-Press Enter for mp4. Type a number or a custom extension (flac, opus, avi, etc).
-
-Output lands in `./videos/`.
-
----
-
-## How it works
-
-**YouTube / Shorts / Live** — detected by URL, handed straight to yt-dlp with best quality up to 1080p merged to the chosen format. No browser, no scraping.
-
-**Everything else** runs through four layers in order:
-
-1. Direct HTTP fetch via curl_cffi (Chrome TLS fingerprint)
-2. Real Chrome via DrissionPage if step 1 hits a 403 or CF challenge
-3. HTML scan for media URLs, iframe player fetch, base64 decode
-4. yt-dlp generic fallback
-
-If a token-bound CDN URL is detected (pipe-signature pattern), the tool opens the player in Chrome, intercepts the live CDN request, then downloads with ffmpeg.
-
----
-
-## Output formats
-
-When you pick mp4, mkv, or webm: ffmpeg remuxes the stream into that container.
-
-When you pick mp3, aac, flac, opus, m4a: audio is extracted, video discarded.
-
-When you pick original: downloaded as-is, no remux.
-
-Custom extensions work too: type `avi`, `mov`, `ts`, whatever ffmpeg supports.
-
----
-
-## Config
-
-All tunable constants are at the top of the file:
-
-```python
-OUTPUT_DIR     = "videos"    # output folder
-MAX_RETRIES    = 3           # retry count on direct download failures
-MIN_MB         = 2           # files smaller than this are rejected
-YTDLP_TIMEOUT  = 3600        # max seconds for yt-dlp (1 hour)
-FFMPEG_TIMEOUT = 3600        # max seconds for ffmpeg
-STREAM_TIMEOUT = 30          # per-chunk connect/read timeout
-```
-
----
-
-## Planned
-
-- GUI with queue, progress bar, output folder picker
-- 4K / quality selector flag
-- Batch mode: read URLs from a text file
-- YouTube playlist support
-- Resume support via Range header
-- `--dry-run` flag
-- Structured log file per session
-- Twitter/X dedicated path (currently works via intercept)
-- Instagram Reels
-- Bilibili with cookie injection
-
----
-
-## Repo setup (first time)
-
-Create a new repo on GitHub with no README, no gitignore, no license (you will add these yourself).
-
-Then in your project folder:
-
-```bash
-git init
-git add scraper.py README.md .gitignore
-git commit -m "init"
-git branch -M main
-git remote add origin https://github.com/yourusername/scraper.git
-git push -u origin main
-```
-
-Suggested `.gitignore`:
+## Layout
 
 ```
-videos/
-__pycache__/
-*.pyc
-*.part
-*.part.mp4
-.env
+scrape/
+├── main.py          entry point
+├── cli.py           argparse CLI
+├── config.py        constants, headers, HTTP backend selection
+├── media.py         MediaKind / MediaResult — shared result types
+├── patterns.py       compiled regexes
+├── extractors.py     pure HTML/player extraction + pluggable extractor chain
+├── browser.py        Chrome/DrissionPage, Cloudflare bypass, interception
+├── ytdlp.py          yt-dlp integration, platform detection, tool checks
+├── downloader.py      direct download with ffmpeg-first strategy
+├── pipeline.py        orchestrates the layers above
+├── ui.py              banner, mascot, prompts, progress bars, colored logs
+└── logging_setup.py   normal vs --debug logging modes
 ```
 
-For future changes:
+### Adding support for a new extraction pattern
 
-```bash
-git add scraper.py
-git commit -m "what you changed"
-git push
+Add a class to `extractors.py` implementing `extract(html, base_url) ->
+MediaResult | None`, and append it to `DEFAULT_CHAIN`. The pipeline walks
+the chain and uses the first non-`None` result — no changes needed to
+`pipeline.py` itself.
+
+### Tests
+
+```
+pytest
 ```
 
----
-
-## License
-
-MIT
+Tests cover the pure functions only (`extractors.py`, `media.py`,
+`safe_filename`) — feed them fake HTML/URLs rather than hitting live sites.
