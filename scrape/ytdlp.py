@@ -35,6 +35,30 @@ def ytdlp_ok() -> bool:
     return _YTDLP
 
 
+# ── Fast "does yt-dlp know this site?" probe ──────────────────────────────────
+def ytdlp_probe(url: str, referer: str | None = None, timeout: int = 5) -> bool:
+    """--simulate --print url: asks yt-dlp to extract without downloading.
+    Returns True (and cheaply) if it recognizes the site — used as the very
+    first check in the pipeline so any of yt-dlp's ~1800 native extractors
+    (Reddit, Bilibili, Vimeo, TikTok, playlists, etc.) short-circuit our
+    HTML/browser layers entirely instead of us reinventing per-site logic.
+    Killed on timeout rather than left to hang — some unknown sites make
+    yt-dlp do a slow doomed probe of its own before giving up."""
+    if not ytdlp_ok():
+        return False
+    cmd = ["yt-dlp", "--simulate", "--print", "url", "--no-warnings", "--quiet"]
+    if referer:
+        cmd += ["--referer", referer]
+    cmd.append(url)
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        return r.returncode == 0 and bool(r.stdout.strip())
+    except subprocess.TimeoutExpired:
+        return False
+    except Exception:
+        return False
+
+
 # ── Dependency update check ───────────────────────────────────────────────────
 def quick_update_check() -> None:
     """Fast update check: ask yt-dlp if it needs updating (single process,
@@ -58,6 +82,8 @@ def quick_update_check() -> None:
 # ── yt-dlp format args builder (shared across all call sites) ─────────────────
 def yt_fmt_args(out_fmt: str) -> tuple[str, list]:
     """Return (format_selector, extra_args) for yt-dlp."""
+    if out_fmt == "original":
+        out_fmt = ""
     if out_fmt in AUDIO_FMTS:
         return ("bestaudio/best",
                 ["--extract-audio", "--audio-format", out_fmt, "--audio-quality", "0"])
@@ -73,6 +99,36 @@ def is_youtube(url: str) -> bool:
 
 def is_twitter(url: str) -> bool:
     return bool(re.search(r'https?://(?:www\.|mobile\.)?(?:x\.com|twitter\.com)/', url, re.I))
+
+def is_vimeo(url: str) -> bool:
+    return bool(re.search(r'https?://(?:www\.)?vimeo\.com/', url, re.I))
+
+def vimeo_to_player_url(url: str) -> str:
+    """Rewrite vimeo.com/<id> (and /channels/, /groups/ variants) to the
+    player.vimeo.com embed URL. Vimeo revoked the OAuth token its macos/web
+    clients used for anonymous extraction (yt-dlp issue #17271); the embed
+    endpoint answers anonymous requests and was never affected. Already-embed
+    URLs pass through unchanged."""
+    if "player.vimeo.com" in url:
+        return url
+    m = re.search(r'vimeo\.com/(?:(?:channels|groups)/[^/]+/(?:videos/)?|video/)?(\d+)', url)
+    return f"https://player.vimeo.com/video/{m.group(1)}" if m else url
+
+def is_dailymotion(url: str) -> bool:
+    return bool(re.search(
+        r'https?://(?:www\.)?dailymotion\.com/video/|https?://dai\.ly/', url, re.I
+    ))
+
+def is_reddit(url: str) -> bool:
+    return bool(re.search(
+        r'https?://(?:(?:\w+\.)?reddit(?:media)?\.com|v\.redd\.it)/', url, re.I
+    ))
+
+def is_tiktok(url: str) -> bool:
+    return bool(re.search(r'https?://(?:(?:www|vm|vt)\.)?tiktok\.com/', url, re.I))
+
+def is_twitch(url: str) -> bool:
+    return bool(re.search(r'https?://(?:(?:www|clips)\.)?twitch\.tv/', url, re.I))
 
 
 # ── Rainbow yt-dlp progress runner ────────────────────────────────────────────
@@ -236,6 +292,47 @@ def ytdlp_youtube(url: str, out_fmt: str = "mp4") -> bool:
         cprint(f"[yt] saved (no ffmpeg — raw): {final}", 220)
         return True
 
+def ytdlp_vimeo(url: str, out_fmt: str = "mp4") -> bool:
+    """Vimeo native extraction.
+
+    Public videos work without credentials.  Private / login-required videos
+    need browser cookies — we try the same cookie-escalation ladder as YouTube
+    rather than failing hard on the first 403.
+    """
+    if not ytdlp_ok():
+        cprint("[vimeo] yt-dlp not found — pip install yt-dlp", 196)
+        return False
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+    fmt_sel, extra = yt_fmt_args(out_fmt)
+    player_url = vimeo_to_player_url(url)
+
+    def _try(extra_args: list) -> bool:
+        cmd = ["yt-dlp", "--no-warnings", "--newline", "--impersonate", "chrome"] + extra_args + [
+            "-f", fmt_sel,
+            "-o", os.path.join(config.OUTPUT_DIR, "%(title)s.%(ext)s"),
+        ] + extra + [player_url]
+        cprint(f"[vimeo] {' '.join(cmd)}", 245)
+        return run_ytdlp_rainbow(cmd)
+
+    # 1. Plain (public videos)
+    if _try([]):
+        return True
+    # 2. Edge cookies (login-required videos)
+    cprint("[vimeo] Retrying with --cookies-from-browser edge...", 51)
+    if _try(["--cookies-from-browser", "edge"]):
+        return True
+    # 3. Chrome
+    cprint("[vimeo] Retrying with --cookies-from-browser chrome...", 51)
+    if _try(["--cookies-from-browser", "chrome"]):
+        return True
+    # 4. Firefox
+    cprint("[vimeo] Retrying with --cookies-from-browser firefox...", 51)
+    if _try(["--cookies-from-browser", "firefox"]):
+        return True
+    cprint("[vimeo] All attempts failed — log into Vimeo in a browser and retry.", 196)
+    return False
+
+
 def ytdlp_twitter(url: str, out_fmt: str = "mp4") -> bool:
     """Twitter/X native extraction. Tries without cookies first (works for
     most public tweets), then retries with Firefox cookies if that fails."""
@@ -271,6 +368,7 @@ def ytdlp_download(url: str, referer: str, out_fmt: str = "mp4") -> bool:
          "--referer", referer,
          "--add-header", f"User-Agent:{UA}",
          "--extractor-args", "generic:impersonate",
+         "--impersonate", "chrome",
          "--no-warnings", "--newline",
          "-f", fmt_sel,
          "-o", os.path.join(config.OUTPUT_DIR, "%(title)s.%(ext)s")]

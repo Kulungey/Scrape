@@ -4,7 +4,7 @@ yt-dlp progress parsing. Compiled once at import time."""
 import re
 
 MEDIA_RE = re.compile(
-    r'https?://[^\s"\'<>{}\[\]]+\.(?:mp4|m3u8|mpd)(?:[?#][^\s"\'<>]*)?',
+    r'https?://[^\s"\'<>{}\[\]]+\.(?:mp4|m3u8|mpd|webm|ts)(?:[?#][^\s"\'<>]*)?',
     re.I
 )
 SKIP_DOMAINS_RE = re.compile(
@@ -21,7 +21,7 @@ IFRAME_SKIP_RE  = re.compile(
 )
 DIRECT_RE = re.compile(
     r'(?:(?:file|src|source|href|data-src)["\s]*[:=]["\s]*|["\'])'
-    r'["\']?(https?://[^\s"\'<>{}\[\]]+\.(?:mp4|m3u8|mpd)(?:[?#][^\s"\'<>]*)?)',
+    r'["\']?(https?://[^\s"\'<>{}\[\]]+\.(?:mp4|m3u8|mpd|webm|ts)(?:[?#][^\s"\'<>]*)?)',
     re.I,
 )
 YT_RE = re.compile(

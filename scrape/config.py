@@ -64,6 +64,28 @@ except ImportError:
     USING_CFFI = False
 
 
+def resolve_redirect(url: str, timeout: int = 6) -> str:
+    """Follow HTTP redirects to their final destination.
+
+    Needed *before* yt-dlp URL matching or platform detection — yt-dlp
+    matches the literal string you give it against each extractor's regex,
+    it never follows a redirect first. Reddit's mobile share links
+    (/r/<sub>/s/<code>) 301 to the real /comments/... URL that yt-dlp's
+    Reddit regex actually expects; TikTok's vm.tiktok.com/vt.tiktok.com
+    share links work the same way. Best-effort: on any failure, returns
+    the original URL unchanged rather than raising.
+    """
+    try:
+        resp = raw_get(url, headers={"User-Agent": UA}, stream=True, timeout=timeout)
+        try:
+            final_url = getattr(resp, "url", None)
+        finally:
+            resp.close()
+        return final_url or url
+    except Exception:
+        return url
+
+
 # ── Shared header builders ────────────────────────────────────────────────────
 _BASE_HEADERS_STATIC = {
     "Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",

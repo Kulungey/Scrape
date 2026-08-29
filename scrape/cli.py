@@ -17,6 +17,7 @@ import argparse
 import sys
 
 from . import config
+from .dns_check import ensure_dns
 from .logging_setup import configure as configure_logging
 from .pipeline import scrape
 from .ui import (print_logo, wait_for_site_input_with_idle_logo, press_any_key_to_close,
@@ -69,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     config.set_allow_browser(not args.no_browser)
     config.set_allow_ytdlp(not args.no_ytdlp)
 
+    ensure_dns()
     quick_update_check()
 
     interactive = args.url is None

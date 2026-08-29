@@ -21,15 +21,192 @@ from .downloader import safe_filename
 import logging
 _cf_log = logging.getLogger("CFBypass")
 
+# Fingerprint patches for sites that block plain headless Chrome (navigator.webdriver,
+# empty plugins list, etc). Applied via driver.add_init_js() after the page is created —
+# ChromiumOptions has no hook for injecting JS before ChromiumPage instantiation, so this
+# can't live in chrome_opts() itself.
+STEALTH_JS = """
+(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 
-def chrome_opts():
+    const makePlugin = (name, filename, desc, mimeTypes) => {
+        const plugin = Object.create(Plugin.prototype);
+        Object.defineProperty(plugin, 'name',        { get: () => name });
+        Object.defineProperty(plugin, 'filename',    { get: () => filename });
+        Object.defineProperty(plugin, 'description', { get: () => desc });
+        Object.defineProperty(plugin, 'length',      { get: () => mimeTypes.length });
+        mimeTypes.forEach((mt, i) => {
+            const m = Object.create(MimeType.prototype);
+            Object.defineProperty(m, 'type',        { get: () => mt.type });
+            Object.defineProperty(m, 'suffixes',    { get: () => mt.suffixes });
+            Object.defineProperty(m, 'description', { get: () => mt.desc });
+            plugin[i] = m;
+        });
+        return plugin;
+    };
+
+    const fakePlugins = [
+        makePlugin('PDF Viewer',        'internal-pdf-viewer',  'Portable Document Format', [
+            { type: 'application/pdf', suffixes: 'pdf', desc: '' },
+            { type: 'text/pdf',        suffixes: 'pdf', desc: '' },
+        ]),
+        makePlugin('Chrome PDF Viewer', 'internal-pdf-viewer',  'Portable Document Format', [
+            { type: 'application/pdf', suffixes: 'pdf', desc: '' },
+        ]),
+        makePlugin('Chromium PDF Viewer','internal-pdf-viewer', 'Portable Document Format', [
+            { type: 'application/pdf', suffixes: 'pdf', desc: '' },
+        ]),
+        makePlugin('Microsoft Edge PDF Viewer','internal-pdf-viewer','Portable Document Format',[
+            { type: 'application/pdf', suffixes: 'pdf', desc: '' },
+        ]),
+        makePlugin('WebKit built-in PDF','internal-pdf-viewer', 'Portable Document Format', [
+            { type: 'application/pdf', suffixes: 'pdf', desc: '' },
+        ]),
+    ];
+
+    const pluginArray = Object.create(PluginArray.prototype);
+    fakePlugins.forEach((p, i) => { pluginArray[i] = p; });
+    Object.defineProperty(pluginArray, 'length', { get: () => fakePlugins.length });
+    pluginArray.item      = (i) => fakePlugins[i] ?? null;
+    pluginArray.namedItem = (n) => fakePlugins.find(p => p.name === n) ?? null;
+    pluginArray.refresh   = () => {};
+    Object.defineProperty(navigator, 'plugins', { get: () => pluginArray });
+
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    if (!window.chrome) window.chrome = { runtime: {} };
+
+    const origQuery = window.Permissions?.prototype?.query;
+    if (origQuery) {
+        window.Permissions.prototype.query = function(params) {
+            if (params?.name === 'notifications')
+                return Promise.resolve({ state: 'prompt', onchange: null });
+            return origQuery.call(this, params);
+        };
+    }
+
+    if (screen.width === 0) {
+        Object.defineProperty(screen, 'width',       { get: () => 1920 });
+        Object.defineProperty(screen, 'height',      { get: () => 1080 });
+        Object.defineProperty(screen, 'availWidth',  { get: () => 1920 });
+        Object.defineProperty(screen, 'availHeight', { get: () => 1040 });
+    }
+})();
+"""
+
+
+def chrome_opts(headless: bool = True, stealth: bool = False):
     from DrissionPage import ChromiumOptions
     opts = ChromiumOptions()
     opts.set_argument("--no-sandbox")
     opts.set_argument("--disable-blink-features=AutomationControlled")
     opts.set_argument(f"--user-agent={UA}")
-    opts.headless(True)
+    if stealth:
+        opts.set_argument("--window-size=1920,1080")
+        opts.set_argument("--disable-dev-shm-usage")
+        if headless:
+            opts.set_argument("--headless=new")
+        else:
+            opts.headless(False)
+    else:
+        opts.headless(headless)
     return opts
+
+
+def _page_is_blocked(html: str) -> bool:
+    """Heuristic: did the site serve us a blocked/empty page?
+    Headless-blocking sites typically return a bot-check page, a blank
+    body, or a login wall instead of real content."""
+    if not html or len(html.strip()) < 500:
+        return True
+    lower = html.lower()
+    # Common bot-wall markers
+    markers = [
+        "enable javascript",
+        "you need to enable javascript",
+        "access denied",
+        "403 forbidden",
+        "robot check",
+        "are you a robot",
+        "browser not supported",
+        "suspicious activity",
+    ]
+    return any(m in lower for m in markers)
+
+
+# ── Browser fetch (layer 2) ───────────────────────────────────────────────────
+def _drission_fetch_with_opts(site: str, opts, stealth: bool = False) -> tuple[str | None, str | None]:
+    """Inner fetch — one Chrome session with the given options."""
+    from DrissionPage import ChromiumPage
+    captured = {"url": None}
+    driver = ChromiumPage(addr_or_opts=opts)
+    if stealth:
+        driver.add_init_js(STEALTH_JS)
+    listener = start_listener(driver)
+    try:
+        driver.get(site)
+        time.sleep(3)
+        cf_bypass(driver)
+        time.sleep(2)
+        poll_listener(listener, captured, timeout=15)
+
+        html = driver.html
+        if not captured["url"]:
+            m = MEDIA_RE.search(html)
+            if m:
+                captured["url"] = m.group(0)
+                cprint_url("browser", "Found in HTML", captured["url"])
+
+        if not captured["url"]:
+            for m in IFRAME_RE.finditer(html):
+                src = m.group(1).strip()
+                if not src.startswith("http") or IFRAME_SKIP_RE.search(src):
+                    continue
+                print(f"[browser] Checking iframe: {src}")
+                driver.get(src)
+                time.sleep(3)
+                poll_listener(listener, captured, timeout=15)
+                if captured["url"]:
+                    break
+                fm = MEDIA_RE.search(driver.html)
+                if fm:
+                    captured["url"] = fm.group(0)
+                    cprint_url("browser", "Found in iframe HTML", captured["url"])
+                    break
+
+        return html, captured["url"]
+
+    except Exception as e:
+        print(f"[browser] Error: {e}")
+        return None, None
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+
+def drission_fetch(site: str) -> tuple:
+    import importlib.util
+    if importlib.util.find_spec("DrissionPage") is None:
+        cprint("[browser] DrissionPage not installed — pip install DrissionPage", 196)
+        return None, None
+
+    # 1. Try headless + stealth first — faster, no visible window, and patches
+    #    the usual headless fingerprint tells (navigator.webdriver, empty
+    #    plugins list) that some sites check for.
+    print("[browser] Launching Chrome (headless, stealth)...")
+    html, video_url = _drission_fetch_with_opts(
+        site, chrome_opts(headless=True, stealth=True), stealth=True
+    )
+
+    # 2. If the page still looks blocked/empty, retry in headed mode — some
+    #    sites (xvideos, etc.) fingerprint headless Chrome regardless and
+    #    only serve real content to a visible window.
+    if _page_is_blocked(html) and video_url is None:
+        cprint("[browser] Headless blocked — retrying in headed mode...", 208)
+        html, video_url = _drission_fetch_with_opts(site, chrome_opts(headless=False))
+
+    return html, video_url
 
 
 def cf_bypass(driver, max_attempts: int = 10) -> bool:
@@ -99,63 +276,10 @@ def poll_listener(listener, captured: dict, timeout: int = 15) -> None:
             time.sleep(0.3)
 
 
-# ── Browser fetch (layer 2) ───────────────────────────────────────────────────
-def drission_fetch(site: str) -> tuple:
-    try:
-        from DrissionPage import ChromiumPage
-    except ImportError:
-        cprint("[browser] DrissionPage not installed — pip install DrissionPage", 196)
-        return None, None
-
-    print("[browser] Launching Chrome...")
-    captured = {"url": None}
-    driver = ChromiumPage(addr_or_opts=chrome_opts())
-    listener = start_listener(driver)
-
-    try:
-        driver.get(site)
-        time.sleep(3)
-        cf_bypass(driver)
-        time.sleep(2)
-        poll_listener(listener, captured, timeout=15)
-
-        html = driver.html
-        if not captured["url"]:
-            m = MEDIA_RE.search(html)
-            if m:
-                captured["url"] = m.group(0)
-                cprint_url("browser", "Found in HTML", captured["url"])
-
-        if not captured["url"]:
-            for m in IFRAME_RE.finditer(html):
-                src = m.group(1).strip()
-                if not src.startswith("http") or IFRAME_SKIP_RE.search(src):
-                    continue
-                print(f"[browser] Checking iframe: {src}")
-                driver.get(src)
-                time.sleep(3)
-                poll_listener(listener, captured, timeout=15)
-                if captured["url"]:
-                    break
-                fm = MEDIA_RE.search(driver.html)
-                if fm:
-                    captured["url"] = fm.group(0)
-                    cprint_url("browser", "Found in iframe HTML", captured["url"])
-                    break
-
-        return html, captured["url"]
-
-    except Exception as e:
-        print(f"[browser] Error: {e}")
-        return None, None
-    finally:
-        try: driver.quit()
-        except Exception: pass
-
-
 # ── Browser-intercept CDN download (token-bound) ──────────────────────────────
 def browser_intercept_and_download(player_url: str, site_referer: str,
-                                    out_fmt: str = "mp4") -> bool:
+                                    out_fmt: str = "mp4",
+                                    headless: bool = True) -> bool:
     try:
         from DrissionPage import ChromiumPage
     except ImportError:
@@ -164,7 +288,7 @@ def browser_intercept_and_download(player_url: str, site_referer: str,
 
     cprint_url("intercept", "Opening in Chrome", player_url, 208)
     captured = {"url": None}
-    driver = ChromiumPage(addr_or_opts=chrome_opts())
+    driver = ChromiumPage(addr_or_opts=chrome_opts(headless=headless))
     listener = start_listener(driver)
 
     try:
@@ -227,6 +351,7 @@ def browser_intercept_and_download(player_url: str, site_referer: str,
                 cmd = (
                     ["yt-dlp",
                      "--add-header", f"User-Agent:{UA}",
+                     "--impersonate", "chrome",
                      "--no-warnings", "--progress",
                      "-f", fmt_sel,
                      "-o", os.path.join(config.OUTPUT_DIR, "%(title)s.%(ext)s")]
@@ -251,6 +376,7 @@ def browser_intercept_and_download(player_url: str, site_referer: str,
                  "--referer", player_url,
                  "--add-header", f"User-Agent:{UA}",
                  "--extractor-args", "generic:impersonate",
+                 "--impersonate", "chrome",
                  "--no-warnings", "--progress",
                  "-f", fmt_sel,
                  "-o", os.path.join(config.OUTPUT_DIR, "%(title)s.%(ext)s")]

@@ -9,22 +9,40 @@ falling through to the next when it doesn't:
 ```
 URL
  ↓
-Platform detection      (YouTube / X.com → straight to yt-dlp)
+Resolve redirects        (Reddit /s/ share links, TikTok vm.tiktok.com,
+                           bit.ly, t.co — anything that 301s to a real URL,
+                           since platform detection and yt-dlp's own regex
+                           matching never follow a redirect themselves)
  ↓
-Direct HTTP              (curl_cffi with a Chrome TLS fingerprint)
+Platform detection       (YouTube / X.com → straight to yt-dlp)
  ↓
-Browser / Cloudflare     (real Chrome via DrissionPage, CF challenge solving)
+yt-dlp probe              (--simulate: does yt-dlp know this site natively?
+                           Reddit, Bilibili, TikTok, Vimeo, Twitch,
+                           Dailymotion, playlists — ~1800 sites — if yes,
+                           hand off completely and stop here)
  ↓
-HTML + iframe extraction (extractor chain: direct match, then player iframe)
+Direct HTTP               (curl_cffi with a Chrome TLS fingerprint)
  ↓
-Network interception     (watch the browser's own traffic for the CDN URL)
+Browser / Cloudflare      (real Chrome via DrissionPage, CF challenge solving)
  ↓
-yt-dlp                   (generic extractor as a last resort)
+HTML + iframe extraction  (extractor chain: direct match, then player iframe
+                           — a known embed host like player.vimeo.com found
+                           here gets its own yt-dlp probe with the correct
+                           Referer before falling back to raw HTML parsing)
+ ↓
+Network interception      (watch the browser's own traffic for the CDN URL)
+ ↓
+yt-dlp                    (generic extractor as a last resort)
  ↓
 ffmpeg
  ↓
 Download
 ```
+
+The yt-dlp probe is what makes Reddit, Bilibili, TikTok, and Vimeo
+(direct or embedded on a third-party site) work without us maintaining
+per-site extraction logic — we only fall through to our own HTML/browser
+pipeline for sites yt-dlp genuinely doesn't recognize.
 
 ## Install
 

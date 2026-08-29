@@ -1,6 +1,0 @@
-videos/
-__pycache__/
-*.pyc
-*.part
-*.part.mp4
-.env
