@@ -9,8 +9,10 @@ description = "A layered media extraction and downloading tool for difficult vid
 requires-python = ">=3.10"
 dependencies = [
     "DrissionPage",
+    "playwright",
     "curl_cffi",
     "yt-dlp",
+    "spotdl",
 ]
 
 [project.optional-dependencies]

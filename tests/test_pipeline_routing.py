@@ -34,7 +34,7 @@ def test_unrecognized_site_tries_browser_before_direct_fetch():
     with patch("scrape.pipeline.ytdlp_ok", return_value=True), \
          patch("scrape.pipeline.ytdlp_probe", return_value=False), \
          patch("scrape.pipeline.drission_fetch",
-               return_value=('<video src="https://example.com/x.mp4"></video>', None)) as mock_browser, \
+               return_value=('<video src="https://example.com/x.mp4"></video>', None, None, None)) as mock_browser, \
          patch("scrape.pipeline._simple_fetch") as mock_fetch, \
          patch("scrape.pipeline._intercept", return_value=False), \
          patch("scrape.pipeline.download_file", return_value="[1/1] SAVED: x.mp4"), \
@@ -50,7 +50,7 @@ def test_direct_fetch_used_as_last_resort_when_browser_gets_no_html():
     _reset_config()
     with patch("scrape.pipeline.ytdlp_ok", return_value=True), \
          patch("scrape.pipeline.ytdlp_probe", return_value=False), \
-         patch("scrape.pipeline.drission_fetch", return_value=(None, None)), \
+         patch("scrape.pipeline.drission_fetch", return_value=(None, None, None, None)), \
          patch("scrape.pipeline._intercept", return_value=False), \
          patch("scrape.pipeline._simple_fetch",
                return_value=('<video src="https://example.com/x.mp4"></video>', None)) as mock_fetch, \
@@ -83,7 +83,7 @@ def test_embedded_vimeo_iframe_probed_with_page_referer():
     html = '<iframe src="https://player.vimeo.com/video/123456"></iframe>'
     with patch("scrape.pipeline.ytdlp_ok", return_value=True), \
          patch("scrape.pipeline.ytdlp_probe", return_value=False) as mock_probe_site, \
-         patch("scrape.pipeline.drission_fetch", return_value=(html, None)), \
+         patch("scrape.pipeline.drission_fetch", return_value=(html, None, None, None)), \
          patch("scrape.pipeline.ytdlp_download", return_value=True) as mock_dl:
 
         def probe_side_effect(url, referer=None):
@@ -121,7 +121,7 @@ def test_reddit_share_link_resolved_before_detection():
         mock_resolve.assert_called_once_with(short)
         # Fast-path — probe never called; download sees the RESOLVED url
         mock_probe.assert_not_called()
-        mock_dl.assert_called_once_with(canonical, canonical, "mp4")
+        mock_dl.assert_called_once_with(canonical, canonical, "mp4", cf_session=None)
         mock_fetch.assert_not_called()
 
 
@@ -134,7 +134,7 @@ def test_redirect_resolution_failure_still_proceeds_with_original_url():
          patch("scrape.pipeline.ytdlp_ok", return_value=True), \
          patch("scrape.pipeline.ytdlp_probe", return_value=False), \
          patch("scrape.pipeline.drission_fetch",
-               return_value=('<video src="https://example.com/x.mp4"></video>', None)), \
+               return_value=('<video src="https://example.com/x.mp4"></video>', None, None, None)), \
          patch("scrape.pipeline._intercept", return_value=False), \
          patch("scrape.pipeline.download_file", return_value="[1/1] SAVED: x.mp4"), \
          patch("os.makedirs"):
@@ -193,10 +193,59 @@ def test_vimeo_no_browser_flag_raises_when_ytdlp_fails():
     _reset_config()
 
 
+def test_tiktok_fast_path_uses_ytdlp():
+    """TikTok fast-path calls yt-dlp first; on success exits 0 without
+    ever touching the browser layer."""
+    _reset_config()
+    url = "https://www.tiktok.com/@user/video/12345"
+    with patch("scrape.pipeline.resolve_redirect", return_value=url), \
+         patch("scrape.pipeline.ytdlp_ok", return_value=True), \
+         patch("scrape.pipeline.ytdlp_probe") as mock_probe, \
+         patch("scrape.pipeline.ytdlp_download", return_value=True) as mock_dl, \
+         patch("scrape.pipeline._intercept") as mock_intercept:
+        with pytest.raises(SystemExit) as exc:
+            pipeline.scrape(url, "mp4")
+        assert exc.value.code == 0
+        mock_probe.assert_not_called()   # skipped — fast-path
+        mock_dl.assert_called_once_with(url, url, "mp4", cf_session=None)
+        mock_intercept.assert_not_called()
+
+
+def test_tiktok_falls_through_to_browser_when_ytdlp_fails():
+    """The actual reported bug: yt-dlp's TikTok extractor breaks whenever
+    TikTok restructures its page JSON ('Unable to extract universal data
+    for rehydration'). When that happens the pipeline must fall through
+    to browser intercept rather than hard-exiting with failure."""
+    _reset_config()
+    url = "https://www.tiktok.com/@progearcambodia/video/7610985031191891221"
+    with patch("scrape.pipeline.resolve_redirect", return_value=url), \
+         patch("scrape.pipeline.ytdlp_ok", return_value=True), \
+         patch("scrape.pipeline.ytdlp_download", return_value=False) as mock_dl, \
+         patch("scrape.pipeline._intercept", return_value=True) as mock_intercept:
+        with pytest.raises(SystemExit) as exc:
+            pipeline.scrape(url, "mp4")
+        assert exc.value.code == 0
+        mock_dl.assert_called_once_with(url, url, "mp4", cf_session=None)
+        mock_intercept.assert_called_once_with(url, url, "mp4")
+
+
+def test_tiktok_no_browser_flag_raises_when_ytdlp_fails():
+    """With --no-browser, a TikTok yt-dlp failure must raise SystemExit
+    rather than silently falling through."""
+    _reset_config()
+    config.set_allow_browser(False)
+    url = "https://www.tiktok.com/@user/video/12345"
+    with patch("scrape.pipeline.resolve_redirect", return_value=url), \
+         patch("scrape.pipeline.ytdlp_ok", return_value=True), \
+         patch("scrape.pipeline.ytdlp_download", return_value=False):
+        with pytest.raises(SystemExit) as exc:
+            pipeline.scrape(url, "mp4")
+        assert exc.value.code != 0 or isinstance(exc.value.code, str)
+    _reset_config()
+
+
 @pytest.mark.parametrize("url,label", [
     ("https://www.dailymotion.com/video/x8abcde",     "dailymotion"),
-    ("https://www.tiktok.com/@user/video/12345",      "tiktok"),
-    ("https://vm.tiktok.com/ZMxxxxxx/",               "tiktok"),
     ("https://www.twitch.tv/videos/123456789",        "twitch"),
     ("https://clips.twitch.tv/SomeClipName",          "twitch"),
 ])
@@ -211,7 +260,7 @@ def test_known_platform_fast_path(url, label):
             pipeline.scrape(url, "mp4")
         assert exc.value.code == 0
         mock_probe.assert_not_called()
-        mock_dl.assert_called_once_with(url, url, "mp4")
+        mock_dl.assert_called_once_with(url, url, "mp4", cf_session=None)
 
 
 def test_probe_before_browser_and_direct_fetch_for_unknown_sites():

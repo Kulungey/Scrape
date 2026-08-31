@@ -1,10 +1,10 @@
 """Shared constants, config, and the HTTP backend (curl_cffi if available,
 plain requests as a fallback)."""
 
+import os
 from urllib.parse import urlparse
 
 # ── Config ────────────────────────────────────────────────────────────────────
-OUTPUT_DIR     = "videos"
 MAX_RETRIES    = 3
 MIN_MB         = 2
 YTDLP_TIMEOUT  = 3600
@@ -16,9 +16,51 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 AUDIO_FMTS = frozenset(("mp3", "aac", "flac", "opus", "m4a", "wav"))
 
+# ── Ad-domain blocklist ─────────────────────────────────────────────────────
+# Applied before navigation in both browser engines (DrissionPage/CDP and
+# Playwright) so ad/tracker requests never load.
+AD_BLOCK_DOMAINS = frozenset((
+    "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+    "google-analytics.com", "adnxs.com", "adsrvr.org", "taboola.com",
+    "outbrain.com", "popads.net", "propellerads.com", "exoclick.com",
+    "juicyads.com", "trafficjunky.net", "adtng.com", "revcontent.com",
+    "adsafeprotected.com", "moatads.com", "scorecardresearch.com",
+    "onclickmax.com", "popcash.net", "adcash.com", "clicksor.com",
+))
+
+# CDP-style wildcard patterns, for DrissionPage's driver.set.blocked_urls().
+AD_BLOCK_CDP_PATTERNS = tuple(f"*{d}*" for d in AD_BLOCK_DOMAINS)
+
+
+def is_ad_domain(url: str) -> bool:
+    """True if url's host matches (or is a subdomain of) a known ad domain."""
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    return any(host == d or host.endswith(f".{d}") for d in AD_BLOCK_DOMAINS)
+
+# ── Output directories: video/ and music/ (see dir_for()) ─────────────────────
+VIDEO_DIR = "video"
+MUSIC_DIR = "music"
+OUTPUT_DIR = VIDEO_DIR  # back-compat default; prefer dir_for(out_fmt) at call sites
+
+def dir_for(out_fmt: str) -> str:
+    """Pick the video/ or music/ output directory for a given out_fmt.
+    Audio formats (mp3, aac, flac, opus, m4a, wav) route to MUSIC_DIR;
+    everything else (mp4, mkv, webm, original/"") routes to VIDEO_DIR."""
+    return MUSIC_DIR if out_fmt in AUDIO_FMTS else VIDEO_DIR
+
 # ── Runtime toggles (set by the CLI: --no-browser / --no-ytdlp / --output) ────
 ALLOW_BROWSER = True
 ALLOW_YTDLP = True
+
+# Max video height (px) the user's quality selection caps downloads at.
+# 1080 is the ceiling — never raised above that (see cli.QUALITY_CHOICES).
+MAX_HEIGHT = 1080
+
+# Audio bitrate (kbps) the user's audio-quality selection targets.
+AUDIO_BITRATE = 320
 
 def set_allow_browser(flag: bool) -> None:
     global ALLOW_BROWSER
@@ -28,9 +70,21 @@ def set_allow_ytdlp(flag: bool) -> None:
     global ALLOW_YTDLP
     ALLOW_YTDLP = flag
 
+def set_max_height(height: int) -> None:
+    global MAX_HEIGHT
+    MAX_HEIGHT = height
+
+def set_audio_bitrate(kbps: int) -> None:
+    global AUDIO_BITRATE
+    AUDIO_BITRATE = kbps
+
 def set_output_dir(path: str) -> None:
-    global OUTPUT_DIR
-    OUTPUT_DIR = path
+    """--output override: video/ and music/ become subdirectories of path
+    instead of top-level directories."""
+    global VIDEO_DIR, MUSIC_DIR, OUTPUT_DIR
+    VIDEO_DIR = os.path.join(path, "video")
+    MUSIC_DIR = os.path.join(path, "music")
+    OUTPUT_DIR = VIDEO_DIR
 
 # ── HTTP backend: curl_cffi (preferred) or plain requests ─────────────────────
 try:
@@ -106,25 +160,31 @@ _BASE_HEADERS_STATIC = {
 def base_headers(referer: str = "") -> dict:
     return {"User-Agent": UA, "Referer": referer, **_BASE_HEADERS_STATIC}
 
-def cdn_headers(referer: str) -> dict:
+def cdn_headers(referer: str, cf_session: dict | None = None) -> dict:
     parsed = urlparse(referer)
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    return {
-        "User-Agent":     UA,
+    h = {
+        "User-Agent":     (cf_session or {}).get("ua", UA),
         "Referer":        referer,
         "Origin":         origin,
         "Sec-Fetch-Dest": "video",
         "Sec-Fetch-Mode": "no-cors",
         "Sec-Fetch-Site": "cross-site",
     }
+    if cf_session and cf_session.get("cookies"):
+        h["Cookie"] = "; ".join(f"{k}={v}" for k, v in cf_session["cookies"].items())
+    return h
 
-def ffmpeg_hdr_block(referer: str) -> str:
-    h = cdn_headers(referer)
-    return (
+def ffmpeg_hdr_block(referer: str, cf_session: dict | None = None) -> str:
+    h = cdn_headers(referer, cf_session=cf_session)
+    block = (
         f"Referer: {h['Referer']}\r\n"
         f"Origin: {h['Origin']}\r\n"
-        f"User-Agent: {UA}\r\n"
+        f"User-Agent: {h['User-Agent']}\r\n"
         f"Sec-Fetch-Dest: video\r\n"
         f"Sec-Fetch-Mode: no-cors\r\n"
         f"Sec-Fetch-Site: cross-site\r\n"
     )
+    if "Cookie" in h:
+        block += f"Cookie: {h['Cookie']}\r\n"
+    return block

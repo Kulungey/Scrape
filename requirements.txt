@@ -1,0 +1,13 @@
+DrissionPage
+playwright
+curl_cffi
+yt-dlp
+spotdl
+rich
+
+# Docker is NOT a pip package and can't be installed via this file.
+# It's optional, and only used by the Solverr/Byparr Cloudflare fallback
+# tier (scrape/docker_manager.py). Install it yourself if you want that
+# tier available: https://www.docker.com/products/docker-desktop/
+# scrape detects/starts it and pulls the fallback container automatically
+# once it's installed — no manual docker commands needed after that.

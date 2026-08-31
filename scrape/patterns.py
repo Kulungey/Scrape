@@ -3,8 +3,14 @@ yt-dlp progress parsing. Compiled once at import time."""
 
 import re
 
+# Extensions we treat as "this is the media file we're looking for" —
+# shared by the HTML-scanning regexes below and by the browser network
+# listener's URL match (see browser.MEDIA_CONTENT_TYPES for the
+# Content-Type-based fallback used when a URL has no extension at all).
+MEDIA_EXTS = r'mp4|m3u8|mpd|webm|ts|mp3'
+
 MEDIA_RE = re.compile(
-    r'https?://[^\s"\'<>{}\[\]]+\.(?:mp4|m3u8|mpd|webm|ts)(?:[?#][^\s"\'<>]*)?',
+    r'https?://[^\s"\'<>{}\[\]]+\.(?:' + MEDIA_EXTS + r')(?:[?#][^\s"\'<>]*)?',
     re.I
 )
 SKIP_DOMAINS_RE = re.compile(
@@ -21,11 +27,21 @@ IFRAME_SKIP_RE  = re.compile(
 )
 DIRECT_RE = re.compile(
     r'(?:(?:file|src|source|href|data-src)["\s]*[:=]["\s]*|["\'])'
-    r'["\']?(https?://[^\s"\'<>{}\[\]]+\.(?:mp4|m3u8|mpd|webm|ts)(?:[?#][^\s"\'<>]*)?)',
+    r'["\']?(https?://[^\s"\'<>{}\[\]]+\.(?:' + MEDIA_EXTS + r')(?:[?#][^\s"\'<>]*)?)',
     re.I,
 )
 YT_RE = re.compile(
     r'(?:https?://)?(?:www\.|m\.)?'
     r'(?:youtube\.com/(?:watch|shorts|live|embed)|youtu\.be/)',
     re.I
+)
+
+# Catches JWPlayer / VideoJS / bare JS assignments:
+#   sources: [{file: "https://...m3u8"}]
+#   "hls":"https://...m3u8"
+SOURCES_RE = re.compile(
+    r'(?:file|hls|src|source|video_url|stream_url|videoUrl|streamUrl)'
+    r'\s*["\'\']?\s*[:=]\s*["\'\']'
+    r'(https?://[^\s"\'\'<>{}\[\]]+\.(?:' + MEDIA_EXTS + r')(?:[?#][^\s"\'\'<>]*)?)',
+    re.I,
 )
