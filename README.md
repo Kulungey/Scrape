@@ -1,13 +1,13 @@
 # scrape
 
-> Paste a URL, pick a format, get the file. A layered downloader for video/audio pages that regular downloaders choke on.
+> Paste a URL, pick a format, get the file. A layered downloader built to actually get the media off pages that break most downloaders.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](https://opensource.org/licenses/MIT)
 
 ## Why
 
-Most downloaders are slow, break on certain sites, or just give up. `scrape` tries the cheapest extraction method first (direct HTTP) and escalates through heavier ones (browser + Cloudflare handling, iframe scanning, network interception, yt-dlp) only when it needs to.
+I got tired of downloaders that either didn't work or worked once and broke the next week, so I built my own extraction pipeline from scratch: direct HTTP parsing, iframe chain scanning with recursive re-scanning, base64-encoded URL detection, a real Chrome session for Cloudflare and JS-heavy pages, and live network interception to grab the media request as it happens. That's the engine. yt-dlp only gets called in as a fallback, for the sites my own extraction genuinely can't crack on its own, not as the main path.
 
 ## Install
 
@@ -23,20 +23,21 @@ Needs Python 3.10+, ffmpeg, and Chrome. Docker is optional, only used as a last-
 ## Quick start
 
 ```bash
-scrape                              # interactive(better to use this way)
+scrape                              # interactive, better to use it this way
 scrape https://example.com/video    # direct
 scrape https://example.com/video -f mp3
 ```
 
 ## Tested and working
 
-YouTube (video, Shorts, playlists), X/Twitter, Reddit, Vimeo, Dailymotion, Twitch, TikTok, Instagram Reels, Spotify (audio). Anything else yt-dlp supports works through the fallback layer even without dedicated handling.
+YouTube (video, Shorts, playlists), X/Twitter, Reddit, Vimeo, Dailymotion, Twitch, TikTok, Instagram Reels, Spotify audio. Beyond that, yt-dlp's library covers a lot more even without dedicated handling.
 
-## Features
+## What it actually does
 
-* Layered fallback: direct HTTP → browser/Cloudflare → iframe scan → network interception → yt-dlp
-* Portrait and landscape video, HLS/DASH, separate audio/video streams
-* Tokenized/signed CDN URL handling
+* Layered fallback: direct HTTP → browser/Cloudflare → recursive iframe scanning → live network interception → yt-dlp as the last resort
+* Reads through obfuscation: base64-encoded URLs, packed JS, tokenized/signed CDN links
+* Handles portrait and landscape video, HLS/DASH, separate audio/video streams correctly
+* Real Cloudflare handling through an actual browser session, not a header spoof
 * MP4, MP3, and other output formats via ffmpeg
 * CLI + interactive mode, debug logging
 
@@ -54,4 +55,4 @@ Personal project, but issues, ideas, and PRs are welcome. Found a site that brea
 
 ## License
 
-MIT. Made this to be accessible, not to gatekeep it — free to fork, free to build on. Anything legal that follows from what you do with it is on you, not me. Provided as is, no warranty.
+MIT. Built this myself, and it's meant to be accessible, not gatekept. Free to fork, free to build on. Anything legal that follows from what you do with it is on you, not me. Provided as is, no warranty.
