@@ -196,6 +196,10 @@ def _drission_fetch_with_opts(site: str, opts, stealth: bool = False) -> tuple[s
                 cprint_url("browser", "Found in packed JS", packed_url)
 
         if not captured["url"]:
+            clicked_sel = try_play_click(driver)
+            if clicked_sel:
+                cprint(f"[browser] Clicked play button: {clicked_sel}", 51)
+                time.sleep(1.5)  # give the click a moment to trigger the request
             poll_listener(listener, captured, timeout=15)
             html = driver.html
 
@@ -211,6 +215,10 @@ def _drission_fetch_with_opts(site: str, opts, stealth: bool = False) -> tuple[s
                 print(f"[browser] Checking iframe: {src}")
                 driver.get(src)
                 time.sleep(3)
+                clicked_sel = try_play_click(driver)
+                if clicked_sel:
+                    cprint(f"[browser] Clicked play button in iframe: {clicked_sel}", 51)
+                    time.sleep(1.5)
                 poll_listener(listener, captured, timeout=15)
                 if captured["url"]:
                     player_referer = src
@@ -690,6 +698,48 @@ def extract_media_url(raw_url: str, packet=None) -> str | None:
     return None
 
 
+# ── Play-click simulation ────────────────────────────────────────────────────
+# Some players never request their media file until their custom play
+# overlay gets clicked — the underlying <video> tag sits there empty, so
+# poll_listener() would otherwise time out with nothing captured. Video.js
+# and JW Player cover a lot of the web and both have stable, documented
+# selectors for that overlay, so those go first; a handful of generic
+# fallbacks catch sites using neither. Order matters: most specific first,
+# so a site running Video.js never falls through to a broader guess.
+PLAY_BUTTON_SELECTORS = [
+    "css:.vjs-big-play-button",        # Video.js
+    "css:.jw-icon-display",            # JW Player
+    "tag:button@class*=play",
+    "tag:button@aria-label*=play",
+    "css:.play-button",
+    "css:[class*='play']",
+]
+
+
+def try_play_click(driver, selectors=PLAY_BUTTON_SELECTORS, timeout: float = 0.6) -> str | None:
+    """Click the first matching play-button overlay, if any.
+
+    Tries each selector in turn and clicks only the first hit — deliberately
+    not "click everything that matches" — to avoid landing on an unrelated
+    element (e.g. an ad overlay) further down a broad selector. DrissionPage's
+    .ele()/.click() already do their own wait-for-actionable check (the same
+    role Playwright's auto-waiting plays), so this doesn't hand-roll one.
+
+    Returns the selector that matched and was clicked, or None — a safe
+    no-op on any site that isn't using one of these players.
+    """
+    for sel in selectors:
+        try:
+            btn = driver.ele(sel, timeout=timeout)
+            if btn:
+                btn.click()
+                debug_event(stage="play_click", selector=sel, result="clicked")
+                return sel
+        except Exception as e:
+            debug_event(stage="play_click", selector=sel, result="error", error=str(e))
+    return None
+
+
 def poll_listener(listener, captured: dict, timeout: int = 15, idle_timeout: float = 3.0) -> None:
     """Poll captured network traffic for a media URL.
 
@@ -801,12 +851,12 @@ def browser_intercept_and_download(player_url: str, site_referer: str,
             "css:video",
         ]
 
-        _GENERIC_SELECTORS = [
-            "tag:button@class*=play", "tag:button@aria-label*=play",
-            "css:.play-button", "css:[class*='play']",
-        ]
-
-        selectors = (_XCOM_SELECTORS + _GENERIC_SELECTORS) if is_twitter else _GENERIC_SELECTORS
+        # Twitter/X gets its own selectors tried first, then falls through to
+        # the shared Video.js/JW Player/generic list; every other site just
+        # uses the shared list directly (kept in one place — see
+        # PLAY_BUTTON_SELECTORS — so this and _drission_fetch_with_opts can't
+        # drift apart).
+        selectors = (_XCOM_SELECTORS + PLAY_BUTTON_SELECTORS) if is_twitter else PLAY_BUTTON_SELECTORS
 
         clicked_once = False
         while not captured["url"] and time.time() < deadline:
@@ -814,17 +864,11 @@ def browser_intercept_and_download(player_url: str, site_referer: str,
             if captured["url"]:
                 break
             if not clicked_once:
-                for sel in selectors:
-                    try:
-                        btn = driver.ele(sel, timeout=0.5)
-                        if btn:
-                            btn.click()
-                            print(f"[intercept] Clicked: {sel}")
-                            time.sleep(2)
-                            clicked_once = True
-                            break
-                    except Exception:
-                        pass
+                clicked_sel = try_play_click(driver, selectors=selectors)
+                if clicked_sel:
+                    print(f"[intercept] Clicked: {clicked_sel}")
+                    time.sleep(2)
+                    clicked_once = True
             time.sleep(0.5)
 
         if not captured["url"]:
